@@ -1,0 +1,358 @@
+USE [IDGEN]
+GO
+/****** Object:  StoredProcedure [dbo].[IdentityUsernameChange]    Script Date: 8/03/2024 4:37:06 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+ALTER PROCEDURE [dbo].[IdentityUsernameChange] @Identity nvarchar(50), @Prefix nvarchar(50) = NULL, @Confirm nvarchar(50) = NULL, @Debug bit = 0
+AS
+SET NOCOUNT ON
+
+-----------------------------
+-- IDGEN Identity Username change
+-- 2019-09-20 Anthony Price
+-- Username change sp with forced preview/confirmation step upon end user.
+-- 2019-10-09 ANthony Price
+-- - Script fully refactored.
+-- - functionality to identify previous usernames for identity implemented.
+--
+-- Parameters:
+-- 1. Identity		Required	Valid Input: current username OR idmGuid
+-- 2. UIDPrefex		Optional	Valid Input: A-z characters only. leave empty ('') to generate on name
+-- 3. Confirmation	Optional	Valid Input: string returned to user from first execution of sp.
+--
+--
+-- Example usage:
+--		First Execution to return a preview username generation (of apric29 as example). 
+--		Second execution to confirm username change to apric29
+-- exec dbo.IdentityUsernameChange 'apric0' '' ''
+-- exec dbo.IdentityUsernameChange 'apric0' '' 'apric29'
+--
+-- Example usage:
+--		First Execution to return a preview username generation (of batman0 as example).
+--		Second execution to confirm username change to batman0
+-- exec dbo.IdentityUsernameChange 'apric0' 'batman' ''
+-- exec dbo.IdentityUsernameChange 'apric0' 'batman' 'batman0'
+-- Execute in a new query
+------------------------------
+
+--
+
+/* Stored Proc inputs */
+DECLARE @INPUT_IDENTITY VARCHAR(50)
+DECLARE @INPUT_PREFIX VARCHAR(50)
+DECLARE @INPUT_CONFIRM VARCHAR(50)
+SELECT @INPUT_IDENTITY = @Identity,
+	   @INPUT_PREFIX = @Prefix,
+	   @INPUT_CONFIRM = @Confirm
+
+/* Input Verification / flags*/
+DECLARE @VERIFIED_IDENTITY			BIT = 0;
+DECLARE @VERIFIED_PREFIX			BIT = 0;
+DECLARE @VERIFIED_CONFIRM			BIT = 0;
+DECLARE @VERIFIED_NAMEPARTS			BIT = 0;
+DECLARE @VALIDATION_FORMAT_PREFIX	VARCHAR(50) = '%[^A-Za-z]%'
+DECLARE @VALIDATION_FORMAT_UID_A	VARCHAR(50) = '%[^A-z]%'
+DECLARE @VALIDATION_FORMAT_UID_B	VARCHAR(50) = '%[^0-9]%'
+
+/* Internals */
+DECLARE @VALIDATED_GUID				VARCHAR(50)
+DECLARE @VALIDATED_PREFIX			VARCHAR(50)
+DECLARE @VALIDATED_CONFIRM			VARCHAR(50)
+DECLARE @CURRENT_UID				VARCHAR(50)
+
+DECLARE @PREVIEWORCOMMITMODE		CHAR(1) = 'P'
+DECLARE @UIDCHANGESUCCESSFULL		BIT = 0
+
+DECLARE @POTENTIAL_UIDS				TABLE (POTENTIAL_UID VARCHAR(50), POTENTIAL_UID_TYPE VARCHAR(20) )
+DECLARE	@MESSAGES					TABLE (MsgType VARCHAR(20), Msg VARCHAR(MAX), POTENTIAL_UID VARCHAR(50), POTENTIAL_UID_TYPE VARCHAR(20))
+/* Name Parts if required */
+DECLARE @ID_NAME_GIVEN				VARCHAR(50)
+DECLARE @ID_NAME_GIVEN_PREFERRED	VARCHAR(50)
+DECLARE @ID_NAME_MIDDLE				VARCHAR(50)
+DECLARE @ID_NAME_FAMILY				VARCHAR(50)
+DECLARE @ID_STATUS					VARCHAR(10)
+DECLARE @ID_ADDOMAIN				VARCHAR(10)
+
+/* PREVIOUS USERNAMES */
+DECLARE @PREV_TOTAL					INT = 0;
+DECLARE @PREV_COUNTER				INT = 0;
+DECLARE @PREV_COUNTER_CEILING		INT = 50;
+
+/* WHILE LOOP UID GENERATOR */
+DECLARE @LOOP_COUNTER				INT = 0;
+DECLARE @LOOP_COUNTER_CEILING		INT = 5000
+DECLARE @LOOP_BREAKOUT				BIT = 0
+
+
+/* Validate Input: Identity */
+/* -------------------------------------------------------
+	Check if @INPUT_IDENTITY is a valid guid,
+	if so look it up for a match in IDGEN as idmguid
+	if not, look up for a match in IDGEN as uid
+*/
+IF(TRY_CONVERT(uniqueidentifier,@INPUT_IDENTITY) IS NOT NULL)
+BEGIN
+	IF((SELECT 1 FROM IDGEN.DBO.InUseIAM WHERE [idmGuid] = @INPUT_IDENTITY) = 1)
+	BEGIN
+		SET @VERIFIED_IDENTITY = 1
+		SELECT @VALIDATED_GUID = idmguid, @CURRENT_UID = LTRIM(RTRIM(uid)) FROM IDGEN.DBO.InUseIAM WHERE [idmGuid] = @INPUT_IDENTITY
+	END
+END
+ELSE
+BEGIN
+	IF((SELECT 1 FROM IDGEN.DBO.InUseIAM WHERE [uid] = @INPUT_IDENTITY) = 1)
+	BEGIN
+		SET @VERIFIED_IDENTITY = 1
+		SELECT @VALIDATED_GUID = idmguid, @CURRENT_UID = LTRIM(RTRIM(uid)) FROM IDGEN.DBO.InUseIAM WHERE [uid] = @INPUT_IDENTITY
+	END
+END
+
+/* Validate Input: Prefix */
+/* ------------------------------------------------------- 
+	if prefix input is present, validate it's format (A-z)
+*/
+IF(@INPUT_PREFIX IS NOT NULL AND @INPUT_PREFIX <> '')
+BEGIN
+	/* Prefix has been provided, does it meet requirements though? (A-z only)*/
+	IF((SELECT CASE WHEN (@INPUT_PREFIX LIKE @VALIDATION_FORMAT_PREFIX OR @INPUT_PREFIX = '') THEN 0 ELSE 1 END) = 1)
+	BEGIN
+		/* Meets requirements */
+		SET @VERIFIED_PREFIX = 1
+		SET @VALIDATED_PREFIX = @INPUT_PREFIX
+	END
+END
+
+/* Get Name parts from IDMExport */
+/* -------------------------------------------------------
+	if prefix not already set,
+	get name parts and details from idmexport	
+*/
+IF (@VERIFIED_IDENTITY = 1 AND @VERIFIED_PREFIX = 0)
+BEGIN
+	IF( (SELECT 1 FROM IdmExport.DBO.mms_metaverse WHERE idmGUID = @VALIDATED_GUID) = 1)
+	BEGIN
+		SELECT
+			@ID_NAME_GIVEN = givenName,
+			@ID_NAME_GIVEN_PREFERRED = idmPreferredName,
+			@ID_NAME_MIDDLE = idmMiddleNames,
+			@ID_NAME_FAMILY = sn,
+			@ID_ADDOMAIN = idmADDomain,
+			@ID_STATUS = idmStatus
+		FROM IdmExport.DBO.mms_metaverse
+		WHERE idmGUID = @VALIDATED_GUID
+
+		IF (@ID_NAME_GIVEN_PREFERRED IS NOT NULL)
+		BEGIN
+			SELECT @ID_NAME_GIVEN = @ID_NAME_GIVEN_PREFERRED
+		END
+
+		IF (@ID_NAME_GIVEN IS NOT NULL AND @ID_NAME_FAMILY IS NOT NULL AND @ID_ADDOMAIN IS NOT NULL AND @ID_STATUS = 'A')
+		BEGIN
+			SET @VERIFIED_NAMEPARTS = 1; 
+		END
+	END
+END
+
+/* Generate Prefix from name parts if prefix not provided*/
+/* -------------------------------------------------------
+	Using name parts above, generate a prefix
+*/
+IF (@VERIFIED_IDENTITY = 1 AND @VERIFIED_PREFIX = 0 AND @VERIFIED_NAMEPARTS = 1)
+BEGIN
+	IF (@ID_ADDOMAIN = 'CORP')
+	BEGIN
+		/* Format for CORP */
+		SELECT @VALIDATED_PREFIX = LOWER(CONCAT(
+			LEFT(@ID_NAME_GIVEN,1),
+			LEFT(ISNULL(@ID_NAME_MIDDLE,'x'),1),
+			LEFT(@ID_NAME_FAMILY,3)))
+	END
+	ELSE
+	BEGIN
+		/* Format for School */
+		SELECT @VALIDATED_PREFIX = LOWER(CONCAT(
+			LEFT(@ID_NAME_GIVEN,1),
+			LEFT(@ID_NAME_FAMILY,4)))
+	END
+
+	/* Confirm generated username prefix meets requirements. Just as a precaution */
+	IF((SELECT CASE WHEN (@VALIDATED_PREFIX LIKE @VALIDATION_FORMAT_PREFIX) THEN 0 ELSE 1 END) = 1)
+	BEGIN
+		SET @VERIFIED_PREFIX = 1
+	END
+END
+
+/* Identify previous usernames */
+/* -------------------------------------------------------
+	Look for previous usernames for the user.
+*/
+IF (@VERIFIED_IDENTITY = 1)
+BEGIN
+	IF ((SELECT COUNT(*) FROM IDGEN.dbo.InUseHist WHERE idmGuid = @VALIDATED_GUID GROUP by idmGuid) > 1)
+	BEGIN
+		 INSERT INTO @POTENTIAL_UIDS
+			SELECT uid AS [POTENTIAL_UID], 'PREVIOUS' AS [Potential_UID_TYPE]
+			FROM IDGEN.dbo.InUseHist
+			WHERE idmGuid = @VALIDATED_GUID
+			AND uid not in (SELECT uid FROM IDGEN.dbo.InUseIAM WHERE idmGuid = @VALIDATED_GUID)
+		--INSERT INTO @POTENTIAL_UIDS
+			--SELECT uid AS [POTENTIAL_UID], 'CURRENT' AS [Potential_UID_TYPE]
+			--FROM IDGEN.dbo.InUseHist
+			--WHERE idmGuid = @VALIDATED_GUID
+			--AND uid in (SELECT uid FROM IDGEN.dbo.InUseIAM WHERE idmGuid = @VALIDATED_GUID)
+	END
+END
+
+/* Identify a new available username */
+/* -------------------------------------------------------
+	Ensure a verified prefix (user input or name-generated) has been set, then loop through uids till new uid found.
+*/
+IF(@VERIFIED_IDENTITY = 1 AND @VERIFIED_PREFIX = 1)
+BEGIN
+	-- 2.1.1. Loop through idgenhist table looking for prefix+n that is available */
+	While (@LOOP_COUNTER < @LOOP_COUNTER_CEILING) And (@LOOP_BREAKOUT <> 1)
+	BEGIN
+		/*Check if uidprefix + n1 is available. */
+		/*Weird data results in potential duplicate usernames, requiring select max(uid) ... group by uid */
+		IF((select 1 from IDGEN.dbo.InUseHist where uid = CONCAT(@VALIDATED_PREFIX,@LOOP_COUNTER) group by uid) IS NULL)
+		BEGIN
+			SET @LOOP_BREAKOUT = 1 
+			INSERT INTO @POTENTIAL_UIDS SELECT CONCAT(@VALIDATED_PREFIX,@LOOP_COUNTER) AS [POTENTIAL_UID], 'NEXTAVAILABLE' as [POTENTIAL_UID_TYPE]
+		END
+		SET @LOOP_COUNTER += 1
+	END
+END
+
+
+/* Validate Input: Confirm */
+/* -------------------------------------------------------
+	if confirm input is present, validate it's format (A-z0-9)
+	SQL doesn't support regex :(. need to find way to match string against A-z0-9
+*/
+IF(@VERIFIED_IDENTITY = 1)
+BEGIN
+	IF(@INPUT_CONFIRM IS NOT NULL AND @INPUT_CONFIRM <> '')
+	BEGIN
+		SET @PREVIEWORCOMMITMODE = 'C'
+	END
+
+	IF( (SELECT 1 FROM @POTENTIAL_UIDS WHERE POTENTIAL_UID = @INPUT_CONFIRM) = 1)
+	BEGIN
+		SET @VERIFIED_CONFIRM = 1;
+		SET @VALIDATED_CONFIRM = @INPUT_CONFIRM;
+	END
+END
+
+IF(@VERIFIED_IDENTITY = 1)
+BEGIN
+	IF ((SELECT COUNT(*) FROM @POTENTIAL_UIDS) >= 1)
+	BEGIN
+		IF(@PREVIEWORCOMMITMODE = 'C')
+		BEGIN
+			IF(@VERIFIED_CONFIRM = 1)
+			BEGIN
+				BEGIN TRY
+					/* Update the username */
+					UPDATE IDGEN.dbo.InUseIAM
+					SET uid = @INPUT_CONFIRM
+					WHERE idmGuid = @VALIDATED_GUID
+
+					/* Update / Set change tables*/
+					IF ((select 1 from IDGEN.dbo.InUseIAMChanges where idmGuid = @VALIDATED_GUID) = 1)
+					BEGIN
+						/* Change record for user already exists, simply update it*/
+						UPDATE IDGEN.dbo.InUseIAMChanges
+						SET ilmProcessingStatus = NULL, ilmChangeStatus = 'M', dtModified = GETDATE()
+						WHERE idmGuid = @VALIDATED_GUID
+					END
+					ELSE
+					BEGIN
+						/* Change record for user not exists, simply insert one */
+						INSERT INTO IDGEN.dbo.InUseIAMChanges (idmGuid,ilmChangeStatus,dtCreated,dtModified,objectClass)
+						VALUES(@VALIDATED_GUID,'M',GETDATE(),GETDATE(),'Person')
+					END
+
+					INSERT INTO @MESSAGES SELECT 'Success' As MsgType,CONCAT('Username successfully changed from ',@CURRENT_UID,' to ',@INPUT_CONFIRM,' for: ',@VALIDATED_GUID) As Msg,
+					NULL AS Potential_Uid,
+					NULL AS POTENTIAL_UID_TYPE
+					SET @UIDCHANGESUCCESSFULL = 1
+				END TRY
+				BEGIN CATCH
+					INSERT INTO @MESSAGES SELECT 'Error' As MsgType,'Error occurred when trying to update username.' As Msg,
+					NULL AS Potential_Uid,
+					NULL AS POTENTIAL_UID_TYPE
+
+					SET @UIDCHANGESUCCESSFULL = 0
+				END CATCH
+			END
+			ELSE
+			BEGIN
+				INSERT INTO @MESSAGES SELECT 'Error' As MsgType,'Confirmation UID does not match any potential username.' As Msg,
+				NULL AS Potential_Uid,
+				NULL AS POTENTIAL_UID_TYPE
+			END
+		-- Else Commit
+			--try catch
+		END
+		ELSE
+		BEGIN
+			print 'output potentials'
+			INSERT INTO @MESSAGES SELECT
+				'PotentialUID' AS [MsgType],
+				'Append the following and re-execute to commit change with this username: @Confirm = ''uid''.' as [Msg],
+				POTENTIAL_UID AS POTENTIAL_UID,
+				POTENTIAL_UID_TYPE AS POTENTIAL_UID_TYPE
+				FROM @POTENTIAL_UIDS
+
+		END
+	END
+	ELSE
+	BEGIN
+		INSERT INTO @MESSAGES SELECT 'Error' As MsgType,'No potential usernames could be found or generated.' As Msg,
+		NULL AS Potential_Uid,
+		NULL AS POTENTIAL_UID_TYPE
+	END
+END
+ELSE
+BEGIN
+	INSERT INTO @MESSAGES SELECT 'Error' As MsgType,'Input Identity could not be verified.' As Msg,
+		NULL AS Potential_Uid,
+		NULL AS POTENTIAL_UID_TYPE
+END
+
+/* Output messages to user */
+SELECT * FROM @MESSAGES
+
+
+
+
+
+
+/* Debug */
+/* -------------------------------------------------------
+	output values for testing / debugging
+*/
+IF (@Debug = 1)
+BEGIN
+	SELECT @INPUT_IDENTITY INPUT_IDENTITY,
+		@INPUT_PREFIX INPUT_PREFIX,
+		@INPUT_CONFIRM INPUT_CONFIRM
+	SELECT	@VERIFIED_IDENTITY VERIFIED_IDENTITY ,
+			@VERIFIED_PREFIX VERIFIED_PREFIX,
+			@VERIFIED_CONFIRM VERIFIED_CONFIRM,
+			--@VERIFIED_NAME_PARTSEXIST VerifiedNameParts,
+			@VALIDATED_GUID VALIDATED_GUID,
+			@VALIDATED_PREFIX VALIDATED_PREFIX,
+			@VALIDATED_CONFIRM VALIDATED_CONFIRM
+	SELECT	@ID_NAME_GIVEN ID_NAME_GIVEN,
+			@ID_NAME_GIVEN_PREFERRED ID_NAME_GIVEN_PREFERRED,
+			@ID_NAME_MIDDLE ID_NAME_MIDDLE,
+			@ID_NAME_FAMILY ID_NAME_FAMILY,
+			@ID_ADDOMAIN ID_ADDOMAIN,
+			@ID_STATUS ID_STATUS
+	SELECT * FROM @POTENTIAL_UIDS
+END
