@@ -31,29 +31,14 @@ namespace API.Controllers
                 }
 
                 string server = "vis.res.eq.edu.au:636"; // AD server name or IP address
-                string username = "res\\xs-vis-svc"; // Your Windows username with access to AD
-                string password = _configuration["VIS"]; // Your Windows password
+                string username = "domain\\serviceacc"; // Your Windows username with access to AD
+                string password = _configuration["local env"]; // Your Windows password
 
                 // Define 14 different OU locations
                 string[] containers = new string[]
                 {
-                    "OU=SUN,DC=vis,DC=net",
-                    "OU=NOQ,DC=vis,DC=net",
-                    "OU=RES,DC=vis,DC=net",
-                    "OU=VISConfig,DC=vis,DC=net",
-
-                    "OU=CORP,DC=vis,DC=net",
-                    "OU=MTN,DC=vis,DC=net",
-                    "OU=IDDIR,DC=vis,DC=net",
-                    "OU=DDS,DC=vis,DC=net",
-
-                    "OU=FCW,DC=vis,DC=net",
-                    "OU=WBB,DC=vis,DC=net",
-                    "OU=GBN,DC=vis,DC=net",
-                    "OU=SOC,DC=vis,DC=net",
-
-                    "OU=MYW,DC=vis,DC=net",
-                    "OU=FNQ,DC=vis,DC=net",
+                    "OU=XXXXX,DC=XXX,DC=XXX" 
+//Add more if needed 
 
                 };
 
