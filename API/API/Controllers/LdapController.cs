@@ -27,11 +27,11 @@ namespace API.Controllers
         [HttpGet]
         public IActionResult GetObjects(string uidParam = null)
         {
-            string server = "vis.res.eq.edu.au:636"; // AD server name or IP address
-            string username = "res\\xs-vis-svc"; // Your Windows username with access to AD
-            string password = _configuration["VIS"]; // Your Windows password
-            string container = "OU=IDDIR,DC=vis,DC=net"; // Specify the container or naming context where user objects are located
-                                                         //Check enviroment variables echo %iddir_string% etc you can set one in cmd for server
+            string server = "domain.au:636"; // AD server name or IP address
+            string username = "res\\service"; // Your Windows username with access to AD
+            string password = _configuration["local"]; // Your Windows password
+            string container = "OU=unit, DC=net"; // Specify the container or naming context where user objects are located
+                                                         //Check enviroment variables echo %env var%
             Console.WriteLine($"Server: {server}, Username: {username}, Container: {container}, Pass: {password}");
             try
             {
