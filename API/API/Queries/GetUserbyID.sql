@@ -1,24 +1,24 @@
-﻿-- GetUserById.sql
+-- GetAnimalById.sql
 
 SELECT TOP 100 
-    [givenName],
-    [idmPreferredName],
-    [sn],
-    [employeeNumber],
-    [idmGUID],
-    [idmSPID],
-    [uid],
-    [idmStatus],
-    [idmSSPRStatus],
-    convert(char(11), [idmDateofBirth], 103) AS idmDateofBirth,
-    [idmGender],
-    convert(char(11), [idmStartDate], 103) AS idmStartDate,
-    convert(char(11), [idmEndDate], 103) AS idmEndDate,
-    [idmCentreCode],
-    [idmIsSilentUser]
+    [LionName],
+    [ElephantPreferredName],
+    [TigerSurname],
+    [AnimalNumber],
+    [ZebraGUID],
+    [GiraffeSPID],
+    [MonkeyID],
+    [AnimalStatus],
+    [AnimalSSPRStatus],
+    convert(char(11), [AnimalDateofBirth], 103) AS AnimalDateofBirth,
+    [AnimalGender],
+    convert(char(11), [AnimalStartDate], 103) AS AnimalStartDate,
+    convert(char(11), [AnimalEndDate], 103) AS AnimalEndDate,
+    [AnimalCentreCode],
+    [AnimalIsSilentUser]
 FROM 
-    [FIMSynchronizationService].[dbo].[mms_metaverse]
+    [AnimalSyncService].[dbo].[AnimalMetaverse]
 WHERE 
-    [idmGUID] = @ID
+    [ZebraGUID] = @ID
 ORDER BY 
-    [sn];
+    [TigerSurname];
